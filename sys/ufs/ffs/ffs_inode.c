@@ -33,6 +33,7 @@
 __FBSDID("$FreeBSD$");
 
 #include "opt_quota.h"
+#include "opt_ufs.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -55,6 +56,7 @@ __FBSDID("$FreeBSD$");
 #include <ufs/ufs/quota.h>
 #include <ufs/ufs/ufsmount.h>
 #include <ufs/ufs/inode.h>
+#include <ufs/ufs/ufs_bswap.h>
 #include <ufs/ufs/ufs_extern.h>
 
 #include <ufs/ffs/fs.h>
@@ -83,6 +85,8 @@ ffs_update(vp, waitfor)
 	struct buf *bp;
 	struct inode *ip;
 	int flags, error;
+	struct ufs1_dinode *di1;
+	struct ufs2_dinode *di2;
 
 	ASSERT_VOP_ELOCKED(vp, "ffs_update");
 	ufs_itimes(vp);
@@ -143,12 +147,25 @@ loop:
 		softdep_update_inodeblock(ip, bp, waitfor);
 	else if (ip->i_effnlink != ip->i_nlink)
 		panic("ffs_update: bad link cnt");
-	if (ip->i_ump->um_fstype == UFS1)
-		*((struct ufs1_dinode *)bp->b_data +
-		    ino_to_fsbo(fs, ip->i_number)) = *ip->i_din1;
-	else
-		*((struct ufs2_dinode *)bp->b_data +
-		    ino_to_fsbo(fs, ip->i_number)) = *ip->i_din2;
+	if (ip->i_ump->um_fstype == UFS1) {
+		di1 = ((struct ufs1_dinode *)bp->b_data +
+				ino_to_fsbo(fs, ip->i_number));
+#ifdef UFS_EI
+		if (UFS_FSNEEDSWAP(fs))
+			ffs_dinode1_swap(ip->i_din1, di1);
+		else
+#endif
+			*di1 = *ip->i_din1;
+	} else {
+		di2 = ((struct ufs2_dinode *)bp->b_data +
+				ino_to_fsbo(fs, ip->i_number));
+#ifdef UFS_EI
+		if (UFS_FSNEEDSWAP(fs))
+			ffs_dinode2_swap(ip->i_din2, di2);
+		else
+#endif
+			*di2 = *ip->i_din2;
+	}
 	if (waitfor && !DOINGASYNC(vp))
 		error = bwrite(bp);
 	else if (vm_page_count_severe() || buf_dirty_count_severe()) {
@@ -587,9 +604,14 @@ ffs_indirtrunc(ip, lbn, dbn, lastbn, level, countp)
 	int i, nblocks, error = 0, allerror = 0;
 	ufs2_daddr_t nb, nlbn, last;
 	ufs2_daddr_t blkcount, factor, blocksreleased = 0;
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 	ufs1_daddr_t *bap1 = NULL;
 	ufs2_daddr_t *bap2 = NULL;
-#	define BAP(ip, i) (((ip)->i_ump->um_fstype == UFS1) ? bap1[i] : bap2[i])
+#	define BAP(ip, i) (((ip)->i_ump->um_fstype == UFS1) ? \
+				UFS_RW32(bap1[i], need2swap) : UFS_RW64(bap2[i], need2swap))
 
 	/*
 	 * Calculate index in current block of last

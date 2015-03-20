@@ -115,9 +115,23 @@ struct	direct {
 #if (BYTE_ORDER == LITTLE_ENDIAN)
 #define	DIRSIZ(oldfmt, dp) \
     ((oldfmt) ? DIRECTSIZ((dp)->d_type) : DIRECTSIZ((dp)->d_namlen))
+#ifdef UFS_EI
+#define DIRSIZ_EI(oldfmt, dp, ns)				\
+    ((oldfmt) && !(ns) ? DIRECTSIZ((dp)->d_type) : DIRECTSIZ((dp)->d_namlen))
+#else /* ! UFS_EI */
+#define	DIRSIZ_EI(oldfmt, dp) \
+    ((oldfmt) ? DIRECTSIZ((dp)->d_type) : DIRECTSIZ((dp)->d_namlen))
+#endif /* ! UFS_EI */
 #else
 #define	DIRSIZ(oldfmt, dp) \
     DIRECTSIZ((dp)->d_namlen)
+#ifdef UFS_EI
+#define DIRSIZ_EI(oldfmt, dp, ns) \
+    ((oldfmt) && (ns) ? DIRECTSIZ((dp)->d_type) : DIRECTSIZ((dp)->d_namlen))
+#else /* ! UFS_EI */
+#define	DIRSIZ_EI(oldfmt, dp) \
+    DIRECTSIZ((dp)->d_namlen)
+#endif /* ! UFS_EI */
 #endif
 #define	OLDDIRFMT	1
 #define	NEWDIRFMT	0

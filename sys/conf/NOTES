@@ -1066,6 +1066,10 @@ options 	UFS_DIRHASH
 # Gjournal-based UFS journaling support.
 options 	UFS_GJOURNAL
 
+# Endian indepedent UFS allows the use and creation of big or little
+# endian volumes indepedent of the host's endianess.
+options		UFS_EI
+
 # Make space in the kernel for a root filesystem on a md device.
 # Define to the number of kilobytes to reserve for the filesystem.
 options 	MD_ROOT_SIZE=10

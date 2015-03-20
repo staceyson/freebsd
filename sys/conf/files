@@ -4002,6 +4002,7 @@ security/mac_test/mac_test.c	optional mac_test
 teken/teken.c			optional sc | vt
 ufs/ffs/ffs_alloc.c		optional ffs
 ufs/ffs/ffs_balloc.c		optional ffs
+ufs/ffs/ffs_bswap.c		optional ffs
 ufs/ffs/ffs_inode.c		optional ffs
 ufs/ffs/ffs_snapshot.c		optional ffs
 ufs/ffs/ffs_softdep.c		optional ffs

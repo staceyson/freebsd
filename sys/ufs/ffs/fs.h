@@ -35,6 +35,7 @@
 
 #include <sys/mount.h>
 #include <ufs/ufs/dinode.h>
+#include <ufs/ufs/ufs_bswap.h>
 
 /*
  * Each disk drive contains some number of filesystems.
@@ -425,6 +426,11 @@ CTASSERT(sizeof(struct fs) == 1376);
 #define	FS_NFS4ACLS	0x0100	/* file system has NFSv4 ACLs enabled */
 #define	FS_INDEXDIRS	0x0200	/* kernel supports indexed directories */
 #define	FS_TRIM		0x0400	/* issue BIO_DELETE for deleted blocks */
+/*
+ * File system internal flags, also in fs_flags.
+ */
+#define FS_INTERNAL 0x80000000  /* mask for internal flags */
+#define FS_SWAPPED  0x80000000  /* file system is endian swapped */
 
 /*
  * Macros to access bits in the fs_active array.
@@ -513,6 +519,16 @@ struct cg {
     ((u_int8_t *)((u_int8_t *)(cgp) + (cgp)->cg_clusteroff))
 #define	cg_clustersum(cgp) \
     ((int32_t *)((uintptr_t)(cgp) + (cgp)->cg_clustersumoff))
+
+#define CG_CHKMAGIC(cgp, ns) (UFS_RW32((cgp)->cg_magic, (ns)) == CG_MAGIC)
+#define CG_INOSUSED(cgp, ns) \
+    ((u_int8_t *)((u_int8_t *)(cgp) + UFS_RW32((cgp)->cg_iusedoff, (ns))))
+#define CG_BLKSFREE(cgp, ns) \
+    ((u_int8_t *)((u_int8_t *)(cgp) + UFS_RW32((cgp)->cg_freeoff, (ns))))
+#define CG_CLUSTERSFREE(cgp, ns) \
+    ((u_int8_t *)((u_int8_t *)(cgp) + UFS_RW32((cgp)->cg_clusteroff, (ns))))
+#define CG_CLUSTERSUM(cgp, ns) \
+    ((int32_t *)((uintptr_t)(cgp) + UFS_RW32((cgp)->cg_clustersumoff, (ns))))
 
 /*
  * Turn filesystem block numbers into disk block addresses.

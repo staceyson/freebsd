@@ -441,6 +441,11 @@ ffs_read(ap)
 	int ioflag;
 
 	vp = ap->a_vp;
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif /* UFS_EI */
 	uio = ap->a_uio;
 	ioflag = ap->a_ioflag;
 	if (ap->a_ioflag & IO_EXT)
@@ -662,6 +667,11 @@ ffs_write(ap)
 	int blkoffset, error, flags, ioflag, size, xfersize;
 
 	vp = ap->a_vp;
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif /* UFS_EI */
 	uio = ap->a_uio;
 	ioflag = ap->a_ioflag;
 	if (ap->a_ioflag & IO_EXT)
@@ -1343,6 +1353,11 @@ struct vop_strategy_args {
 	daddr_t lbn;
 
 	vp = ap->a_vp;
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif /* UFS_EI */
 	lbn = ap->a_bp->b_lblkno;
 	if (VTOI(vp)->i_fs->fs_magic == FS_UFS2_MAGIC &&
 	    lbn < 0 && lbn >= -NXADDR)

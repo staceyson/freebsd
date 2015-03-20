@@ -37,7 +37,13 @@ __FBSDID("$FreeBSD$");
 #ifndef _KERNEL
 #include <ufs/ufs/dinode.h>
 #include <ufs/ffs/fs.h>
+#ifndef UFS_EI
+#define UFS_EI /* Always support endian independent FS in userland. */
+#endif
 #else
+
+#include "opt_ufs.h"
+
 #include <sys/systm.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
@@ -51,6 +57,7 @@ __FBSDID("$FreeBSD$");
 #include <ufs/ufs/inode.h>
 #include <ufs/ufs/extattr.h>
 #include <ufs/ufs/ufsmount.h>
+#include <ufs/ufs/ufs_bswap.h>
 #include <ufs/ufs/ufs_extern.h>
 #include <ufs/ffs/ffs_extern.h>
 #include <ufs/ffs/fs.h>
@@ -76,6 +83,11 @@ ffs_blkatoff(vp, offset, res, bpp)
 	struct buf *bp;
 	ufs_lbn_t lbn;
 	int bsize, error;
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif /* UFS_EI */
 
 	ip = VTOI(vp);
 	fs = ip->i_fs;
@@ -88,6 +100,10 @@ ffs_blkatoff(vp, offset, res, bpp)
 		brelse(bp);
 		return (error);
 	}
+#ifdef UFS_EI
+	if (need2swap)
+			ffs_dirent_swap_in((char *)bp->b_data, bp->b_bcount);
+#endif /* UFS_EI */
 	if (res)
 		*res = (char *)bp->b_data + blkoff(fs, offset);
 	*bpp = bp;
@@ -105,10 +121,17 @@ ffs_load_inode(bp, ip, fs, ino)
 	struct fs *fs;
 	ino_t ino;
 {
+	struct ufs1_dinode *dp1;
+	struct ufs2_dinode *dp2;
 
 	if (ip->i_ump->um_fstype == UFS1) {
-		*ip->i_din1 =
-		    *((struct ufs1_dinode *)bp->b_data + ino_to_fsbo(fs, ino));
+		dp1 = ((struct ufs1_dinode *)bp->b_data + ino_to_fsbo(fs, ino));
+#ifdef UFS_EI
+	if (UFS_FSNEEDSWAP(fs)) {
+			ffs_dinode1_swap(dp1, ip->i_din1);
+	} else
+#endif
+		*(ip->i_din1) = *dp1;
 		ip->i_mode = ip->i_din1->di_mode;
 		ip->i_nlink = ip->i_din1->di_nlink;
 		ip->i_size = ip->i_din1->di_size;
@@ -117,8 +140,13 @@ ffs_load_inode(bp, ip, fs, ino)
 		ip->i_uid = ip->i_din1->di_uid;
 		ip->i_gid = ip->i_din1->di_gid;
 	} else {
-		*ip->i_din2 =
-		    *((struct ufs2_dinode *)bp->b_data + ino_to_fsbo(fs, ino));
+		dp2 = ((struct ufs2_dinode *)bp->b_data + ino_to_fsbo(fs, ino));
+#ifdef UFS_EI
+		if (UFS_FSNEEDSWAP(fs)) {
+			ffs_dinode2_swap(dp2, ip->i_din2);
+		} else
+#endif
+			*(ip->i_din2) = *dp2;
 		ip->i_mode = ip->i_din2->di_mode;
 		ip->i_nlink = ip->i_din2->di_nlink;
 		ip->i_size = ip->i_din2->di_size;
@@ -144,6 +172,10 @@ ffs_fragacct(fs, fragmap, fraglist, cnt)
 	int inblk;
 	int field, subfield;
 	int siz, pos;
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	inblk = (int)(fragtbl[fs->fs_frag][fragmap]) << 1;
 	fragmap <<= 1;
@@ -154,7 +186,8 @@ ffs_fragacct(fs, fragmap, fraglist, cnt)
 		subfield = inside[siz];
 		for (pos = siz; pos <= fs->fs_frag; pos++) {
 			if ((fragmap & field) == subfield) {
-				fraglist[siz] += cnt;
+				/* fraglist[siz] += cnt; */
+				UFS_ADD32(fraglist[siz], cnt, need2swap);
 				pos += siz;
 				field <<= siz;
 				subfield <<= siz;
@@ -337,11 +370,15 @@ ffs_clusteracct(fs, cgp, blkno, cnt)
 	int32_t *lp;
 	u_char *freemapp, *mapp;
 	int i, start, end, forw, back, map, bit;
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	if (fs->fs_contigsumsize <= 0)
 		return;
-	freemapp = cg_clustersfree(cgp);
-	sump = cg_clustersum(cgp);
+	freemapp = CG_CLUSTERSFREE(cgp, need2swap);
+	sump = CG_CLUSTERSUM(cgp, need2swap);
 	/*
 	 * Allocate or clear the actual block.
 	 */
@@ -354,8 +391,8 @@ ffs_clusteracct(fs, cgp, blkno, cnt)
 	 */
 	start = blkno + 1;
 	end = start + fs->fs_contigsumsize;
-	if (end >= cgp->cg_nclusterblks)
-		end = cgp->cg_nclusterblks;
+	if (end >= UFS_RW32(cgp->cg_nclusterblks, need2swap))
+		end = UFS_RW32(cgp->cg_nclusterblks, need2swap);
 	mapp = &freemapp[start / NBBY];
 	map = *mapp++;
 	bit = 1 << (start % NBBY);
@@ -398,17 +435,20 @@ ffs_clusteracct(fs, cgp, blkno, cnt)
 	i = back + forw + 1;
 	if (i > fs->fs_contigsumsize)
 		i = fs->fs_contigsumsize;
-	sump[i] += cnt;
+	/* sump[i] += cnt; */
+	UFS_ADD32(sump[i], cnt, need2swap);
 	if (back > 0)
-		sump[back] -= cnt;
+		/* sump[back] -= cnt; */
+		UFS_ADD32(sump[back], -cnt, need2swap);
 	if (forw > 0)
-		sump[forw] -= cnt;
+		/* sump[forw] -= cnt; */
+		UFS_ADD32(sump[forw], -cnt, need2swap);
 	/*
 	 * Update cluster summary information.
 	 */
 	lp = &sump[fs->fs_contigsumsize];
 	for (i = fs->fs_contigsumsize; i > 0; i--)
-		if (*lp-- > 0)
+		if (UFS_RW32(*lp--, need2swap) > 0)
 			break;
-	fs->fs_maxcluster[cgp->cg_cgx] = i;
+	fs->fs_maxcluster[UFS_RW32(cgp->cg_cgx, need2swap)] = i; /* XXX bswap kernel only? */
 }

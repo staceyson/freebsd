@@ -72,6 +72,7 @@ __FBSDID("$FreeBSD$");
 
 #include <ufs/ufs/quota.h>
 #include <ufs/ufs/inode.h>
+#include <ufs/ufs/ufs_bswap.h>
 #include <ufs/ufs/ufs_extern.h>
 #include <ufs/ufs/extattr.h>
 #include <ufs/ufs/ufsmount.h>
@@ -108,10 +109,17 @@ ffs_balloc_ufs1(struct vnode *vp, off_t startoffset, int size,
 	static struct timeval lastfail;
 	static int curfail;
 	int gbflags, reclaimed;
+#ifdef UFS_EI
+	const int need2swap;
+#endif
 
 	ip = VTOI(vp);
 	dp = ip->i_din1;
 	fs = ip->i_fs;
+#ifdef UFS_EI
+	need2swap = UFS_FSNEEDSWAP(fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 	ump = ip->i_ump;
 	lbn = lblkno(fs, startoffset);
 	size = blkoff(fs, startoffset) + size;
@@ -138,7 +146,7 @@ ffs_balloc_ufs1(struct vnode *vp, off_t startoffset, int size,
 		osize = blksize(fs, ip, nb);
 		if (osize < fs->fs_bsize && osize > 0) {
 			UFS_LOCK(ump);
-			error = ffs_realloccg(ip, nb, dp->di_db[nb],
+			error = ffs_realloccg(ip, nb, UFS_RW32(dp->di_db[nb], need2swap),
 			   ffs_blkpref_ufs1(ip, lastlbn, (int)nb,
 			   &dp->di_db[0]), osize, (int)fs->fs_bsize, flags,
 			   cred, &bp);
@@ -150,7 +158,7 @@ ffs_balloc_ufs1(struct vnode *vp, off_t startoffset, int size,
 				    fs->fs_bsize, osize, bp);
 			ip->i_size = smalllblktosize(fs, nb + 1);
 			dp->di_size = ip->i_size;
-			dp->di_db[nb] = dbtofsb(fs, bp->b_blkno);
+			dp->di_db[nb] = UFS_RW32(dbtofsb(fs, bp->b_blkno), need2swap);
 			ip->i_flag |= IN_CHANGE | IN_UPDATE;
 			if (flags & IO_SYNC)
 				bwrite(bp);
@@ -164,7 +172,7 @@ ffs_balloc_ufs1(struct vnode *vp, off_t startoffset, int size,
 	if (lbn < NDADDR) {
 		if (flags & BA_METAONLY)
 			panic("ffs_balloc_ufs1: BA_METAONLY for direct block");
-		nb = dp->di_db[lbn];
+		nb = UFS_RW32(dp->di_db[lbn], need2swap);
 		if (nb != 0 && ip->i_size >= smalllblktosize(fs, lbn + 1)) {
 			error = bread(vp, lbn, fs->fs_bsize, NOCRED, &bp);
 			if (error) {
@@ -190,7 +198,8 @@ ffs_balloc_ufs1(struct vnode *vp, off_t startoffset, int size,
 				bp->b_blkno = fsbtodb(fs, nb);
 			} else {
 				UFS_LOCK(ump);
-				error = ffs_realloccg(ip, lbn, dp->di_db[lbn],
+				error = ffs_realloccg(ip, lbn,
+				    UFS_RW32(dp->di_db[lbn], need2swap),
 				    ffs_blkpref_ufs1(ip, lbn, (int)lbn,
 				    &dp->di_db[0]), osize, nsize, flags,
 				    cred, &bp);
@@ -220,7 +229,7 @@ ffs_balloc_ufs1(struct vnode *vp, off_t startoffset, int size,
 				softdep_setup_allocdirect(ip, lbn, newb, 0,
 				    nsize, 0, bp);
 		}
-		dp->di_db[lbn] = dbtofsb(fs, bp->b_blkno);
+		dp->di_db[lbn] = UFS_RW32(dbtofsb(fs, bp->b_blkno), need2swap);
 		ip->i_flag |= IN_CHANGE | IN_UPDATE;
 		*bpp = bp;
 		return (0);
@@ -240,7 +249,7 @@ ffs_balloc_ufs1(struct vnode *vp, off_t startoffset, int size,
 	 * Fetch the first indirect block allocating if necessary.
 	 */
 	--num;
-	nb = dp->di_ib[indirs[0].in_off];
+	nb = UFS_RW64(dp->di_ib[indirs[0].in_off], need2swap);
 	allocib = NULL;
 	allocblk = allociblk;
 	lbns_remfree = lbns;
@@ -275,7 +284,7 @@ ffs_balloc_ufs1(struct vnode *vp, off_t startoffset, int size,
 				goto fail;
 		}
 		allocib = &dp->di_ib[indirs[0].in_off];
-		*allocib = nb;
+		*allocib = UFS_RW32(nb, need2swap);
 		ip->i_flag |= IN_CHANGE | IN_UPDATE;
 	}
 	/*
@@ -290,7 +299,7 @@ retry:
 			goto fail;
 		}
 		bap = (ufs1_daddr_t *)bp->b_data;
-		nb = bap[indirs[i].in_off];
+		nb = UFS_RW32(bap[indirs[i].in_off], need2swap);
 		if (i == num)
 			break;
 		i += 1;
@@ -344,7 +353,7 @@ retry:
 				goto fail;
 			}
 		}
-		bap[indirs[i - 1].in_off] = nb;
+		bap[indirs[i - 1].in_off] = UFS_RW32(nb, need2swap);
 		if (allocib == NULL && unwindidx < 0)
 			unwindidx = i - 1;
 		/*
@@ -410,7 +419,7 @@ retry:
 		if (DOINGSOFTDEP(vp))
 			softdep_setup_allocindir_page(ip, lbn, bp,
 			    indirs[i].in_off, nb, 0, nbp);
-		bap[indirs[i].in_off] = nb;
+		bap[indirs[i].in_off] = UFS_RW32(nb, need2swap);
 		/*
 		 * If required, write synchronously, otherwise use
 		 * delayed write.
@@ -555,10 +564,17 @@ ffs_balloc_ufs2(struct vnode *vp, off_t startoffset, int size,
 	static struct timeval lastfail;
 	static int curfail;
 	int gbflags, reclaimed;
+#ifdef UFS_EI
+	const int need2swap;
+#endif
 
 	ip = VTOI(vp);
 	dp = ip->i_din2;
 	fs = ip->i_fs;
+#ifdef UFS_EI
+	need2swap = UFS_FSNEEDSWAP(fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 	ump = ip->i_ump;
 	lbn = lblkno(fs, startoffset);
 	size = blkoff(fs, startoffset) + size;
@@ -572,7 +588,7 @@ ffs_balloc_ufs2(struct vnode *vp, off_t startoffset, int size,
 
 	if (DOINGSOFTDEP(vp))
 		softdep_prealloc(vp, MNT_WAIT);
-	
+
 	/*
 	 * Check for allocating external data.
 	 */
@@ -591,7 +607,7 @@ ffs_balloc_ufs2(struct vnode *vp, off_t startoffset, int size,
 			if (osize < fs->fs_bsize && osize > 0) {
 				UFS_LOCK(ump);
 				error = ffs_realloccg(ip, -1 - nb,
-				    dp->di_extb[nb],
+				    UFS_RW64(dp->di_extb[nb], need2swap),
 				    ffs_blkpref_ufs2(ip, lastlbn, (int)nb,
 				    &dp->di_extb[0]), osize,
 				    (int)fs->fs_bsize, flags, cred, &bp);
@@ -603,7 +619,7 @@ ffs_balloc_ufs2(struct vnode *vp, off_t startoffset, int size,
 					    dp->di_extb[nb],
 					    fs->fs_bsize, osize, bp);
 				dp->di_extsize = smalllblktosize(fs, nb + 1);
-				dp->di_extb[nb] = dbtofsb(fs, bp->b_blkno);
+				dp->di_extb[nb] = UFS_RW64(dbtofsb(fs, bp->b_blkno), need2swap);
 				bp->b_xflags |= BX_ALTDATA;
 				ip->i_flag |= IN_CHANGE;
 				if (flags & IO_SYNC)
@@ -617,7 +633,7 @@ ffs_balloc_ufs2(struct vnode *vp, off_t startoffset, int size,
 		 */
 		if (flags & BA_METAONLY)
 			panic("ffs_balloc_ufs2: BA_METAONLY for ext block");
-		nb = dp->di_extb[lbn];
+		nb = UFS_RW64(dp->di_extb[lbn], need2swap);
 		if (nb != 0 && dp->di_extsize >= smalllblktosize(fs, lbn + 1)) {
 			error = bread_gb(vp, -1 - lbn, fs->fs_bsize, NOCRED,
 			    gbflags, &bp);
@@ -648,7 +664,7 @@ ffs_balloc_ufs2(struct vnode *vp, off_t startoffset, int size,
 			} else {
 				UFS_LOCK(ump);
 				error = ffs_realloccg(ip, -1 - lbn,
-				    dp->di_extb[lbn],
+				    UFS_RW64(dp->di_extb[lbn], need2swap),
 				    ffs_blkpref_ufs2(ip, lbn, (int)lbn,
 				    &dp->di_extb[0]), osize, nsize, flags,
 				    cred, &bp);
@@ -680,7 +696,7 @@ ffs_balloc_ufs2(struct vnode *vp, off_t startoffset, int size,
 				softdep_setup_allocext(ip, lbn, newb, 0,
 				    nsize, 0, bp);
 		}
-		dp->di_extb[lbn] = dbtofsb(fs, bp->b_blkno);
+		dp->di_extb[lbn] = UFS_RW64(dbtofsb(fs, bp->b_blkno), need2swap);
 		ip->i_flag |= IN_CHANGE;
 		*bpp = bp;
 		return (0);
@@ -696,7 +712,7 @@ ffs_balloc_ufs2(struct vnode *vp, off_t startoffset, int size,
 		osize = blksize(fs, ip, nb);
 		if (osize < fs->fs_bsize && osize > 0) {
 			UFS_LOCK(ump);
-			error = ffs_realloccg(ip, nb, dp->di_db[nb],
+			error = ffs_realloccg(ip, nb, UFS_RW64(dp->di_db[nb], need2swap),
 			    ffs_blkpref_ufs2(ip, lastlbn, (int)nb,
 			    &dp->di_db[0]), osize, (int)fs->fs_bsize,
 			    flags, cred, &bp);
@@ -705,11 +721,11 @@ ffs_balloc_ufs2(struct vnode *vp, off_t startoffset, int size,
 			if (DOINGSOFTDEP(vp))
 				softdep_setup_allocdirect(ip, nb,
 				    dbtofsb(fs, bp->b_blkno),
-				    dp->di_db[nb],
+				    dp->di_db[nb], /* XXX bswap? */
 				    fs->fs_bsize, osize, bp);
 			ip->i_size = smalllblktosize(fs, nb + 1);
 			dp->di_size = ip->i_size;
-			dp->di_db[nb] = dbtofsb(fs, bp->b_blkno);
+			dp->di_db[nb] = UFS_RW64(dbtofsb(fs, bp->b_blkno), need2swap);
 			ip->i_flag |= IN_CHANGE | IN_UPDATE;
 			if (flags & IO_SYNC)
 				bwrite(bp);
@@ -723,7 +739,7 @@ ffs_balloc_ufs2(struct vnode *vp, off_t startoffset, int size,
 	if (lbn < NDADDR) {
 		if (flags & BA_METAONLY)
 			panic("ffs_balloc_ufs2: BA_METAONLY for direct block");
-		nb = dp->di_db[lbn];
+		nb = UFS_RW64(dp->di_db[lbn], need2swap);
 		if (nb != 0 && ip->i_size >= smalllblktosize(fs, lbn + 1)) {
 			error = bread_gb(vp, lbn, fs->fs_bsize, NOCRED,
 			    gbflags, &bp);
@@ -751,7 +767,8 @@ ffs_balloc_ufs2(struct vnode *vp, off_t startoffset, int size,
 				bp->b_blkno = fsbtodb(fs, nb);
 			} else {
 				UFS_LOCK(ump);
-				error = ffs_realloccg(ip, lbn, dp->di_db[lbn],
+				error = ffs_realloccg(ip, lbn,
+				    UFS_RW64(dp->di_db[lbn], need2swap),
 				    ffs_blkpref_ufs2(ip, lbn, (int)lbn,
 				    &dp->di_db[0]), osize, nsize, flags,
 				    cred, &bp);
@@ -781,7 +798,7 @@ ffs_balloc_ufs2(struct vnode *vp, off_t startoffset, int size,
 				softdep_setup_allocdirect(ip, lbn, newb, 0,
 				    nsize, 0, bp);
 		}
-		dp->di_db[lbn] = dbtofsb(fs, bp->b_blkno);
+		dp->di_db[lbn] = UFS_RW64(dbtofsb(fs, bp->b_blkno), need2swap);
 		ip->i_flag |= IN_CHANGE | IN_UPDATE;
 		*bpp = bp;
 		return (0);
@@ -837,7 +854,7 @@ ffs_balloc_ufs2(struct vnode *vp, off_t startoffset, int size,
 				goto fail;
 		}
 		allocib = &dp->di_ib[indirs[0].in_off];
-		*allocib = nb;
+		*allocib = UFS_RW64(nb, need2swap);
 		ip->i_flag |= IN_CHANGE | IN_UPDATE;
 	}
 	/*
@@ -852,7 +869,7 @@ retry:
 			goto fail;
 		}
 		bap = (ufs2_daddr_t *)bp->b_data;
-		nb = bap[indirs[i].in_off];
+		nb = UFS_RW64(bap[indirs[i].in_off], need2swap);
 		if (i == num)
 			break;
 		i += 1;
@@ -907,7 +924,7 @@ retry:
 				goto fail;
 			}
 		}
-		bap[indirs[i - 1].in_off] = nb;
+		bap[indirs[i - 1].in_off] = UFS_RW64(nb, need2swap);
 		if (allocib == NULL && unwindidx < 0)
 			unwindidx = i - 1;
 		/*
@@ -973,7 +990,7 @@ retry:
 		if (DOINGSOFTDEP(vp))
 			softdep_setup_allocindir_page(ip, lbn, bp,
 			    indirs[i].in_off, nb, 0, nbp);
-		bap[indirs[i].in_off] = nb;
+		bap[indirs[i].in_off] = UFS_RW64(nb, need2swap);
 		/*
 		 * If required, write synchronously, otherwise use
 		 * delayed write.

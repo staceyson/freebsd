@@ -43,6 +43,7 @@ __FBSDID("$FreeBSD$");
 #include <ufs/ufs/inode.h>
 #include <ufs/ufs/ufsmount.h>
 #include <ufs/ufs/gjournal.h>
+#include <ufs/ufs/ufs_bswap.h>
 
 #include <ufs/ffs/fs.h>
 #include <ufs/ffs/ffs_extern.h>
@@ -63,12 +64,18 @@ ufs_gjournal_modref(struct vnode *vp, int count)
 	struct fs *fs;
 	struct vnode *devvp;
 	ino_t ino;
+#ifdef UFS_EI
+	int need2swap;
+#endif
 
 	ip = VTOI(vp);
 	ump = ip->i_ump;
 	fs = ip->i_fs;
 	devvp = ip->i_devvp;
 	ino = ip->i_number;
+#ifdef UFS_EI
+	need2swap = UFS_FSNEEDSWAP(fs);
+#endif
 
 	cg = ino_to_cg(fs, ino);
 	if (devvp->v_type != VCHR) {
@@ -88,12 +95,13 @@ ufs_gjournal_modref(struct vnode *vp, int count)
 		return (error);
 	}
 	cgp = (struct cg *)bp->b_data;
-	if (!cg_chkmagic(cgp)) {
+	if (!CG_CHKMAGIC(cgp, need2swap)) {
 		brelse(bp);
 		return (0);
 	}
 	bp->b_xflags |= BX_BKGRDWRITE;
-	cgp->cg_unrefs += count;
+	/* cgp->cg_unrefs += count; */
+	UFS_ADD32(cgp->cg_unrefs, count, need2swap);
 	UFS_LOCK(ump);
 	fs->fs_unrefs += count;
 	fs->fs_fmod = 1;

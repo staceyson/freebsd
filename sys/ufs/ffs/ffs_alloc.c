@@ -91,6 +91,7 @@ __FBSDID("$FreeBSD$");
 #include <ufs/ufs/extattr.h>
 #include <ufs/ufs/quota.h>
 #include <ufs/ufs/inode.h>
+#include <ufs/ufs/ufs_bswap.h>
 #include <ufs/ufs/ufs_extern.h>
 #include <ufs/ufs/ufsmount.h>
 
@@ -161,6 +162,10 @@ ffs_alloc(ip, lbn, bpref, size, flags, cred, bnp)
 	int64_t delta;
 #ifdef QUOTA
 	int error;
+#endif
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(ip->i_fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
 #endif
 
 	*bnp = 0;
@@ -1546,12 +1551,13 @@ ffs_fragextend(ip, cg, bprev, osize, nsize)
 	if (error)
 		goto fail;
 	cgp = (struct cg *)bp->b_data;
-	if (!cg_chkmagic(cgp))
+	if (!CG_CHKMAGIC(cgp, need2swap))
 		goto fail;
 	bp->b_xflags |= BX_BKGRDWRITE;
-	cgp->cg_old_time = cgp->cg_time = time_second;
+	cgp->cg_old_time = UFS_RW32(time_second, need2swap);
+	cgp->cg_time = UFS_RW64(time_second, need2swap);
 	bno = dtogd(fs, bprev);
-	blksfree = cg_blksfree(cgp);
+	blksfree = CG_BLKSFREE(cgp, need2swap);
 	for (i = numfrags(fs, osize); i < frags; i++)
 		if (isclr(blksfree, bno + i))
 			goto fail;
@@ -1564,12 +1570,15 @@ ffs_fragextend(ip, cg, bprev, osize, nsize)
 	for (i = frags; i < fs->fs_frag - bbase; i++)
 		if (isclr(blksfree, bno + i))
 			break;
-	cgp->cg_frsum[i - numfrags(fs, osize)]--;
+	/* cgp->cg_frsum[i - numfrags(fs, osize)]--; */
+	UFS_ADD32(cgp->cg_frsum[i - numfrags(fs, osize)], -1, need2swap);
 	if (i != frags)
-		cgp->cg_frsum[i - frags]++;
+		/* cgp->cg_frsum[i - frags]++; */
+		UFS_ADD32(cgp->cg_frsum[i - frags], 1, need2swap);
 	for (i = numfrags(fs, osize), nffree = 0; i < frags; i++) {
 		clrbit(blksfree, bno + i);
-		cgp->cg_cs.cs_nffree--;
+		/* cgp->cg_cs.cs_nffree--; */
+		UFS_ADD32(cgp->cg_cs.cs_nffree, -1, need2swap);
 		nffree++;
 	}
 	UFS_LOCK(ump);
@@ -1613,6 +1622,10 @@ ffs_alloccg(ip, cg, bpref, size, rsize)
 	ufs2_daddr_t blkno;
 	int i, allocsiz, error, frags;
 	u_int8_t *blksfree;
+#ifdef UFS_EI
+	const int need2swap = UFS_IPNEEDSWAP(ip);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	ump = ip->i_ump;
 	fs = ip->i_fs;
@@ -1624,11 +1637,12 @@ ffs_alloccg(ip, cg, bpref, size, rsize)
 	if (error)
 		goto fail;
 	cgp = (struct cg *)bp->b_data;
-	if (!cg_chkmagic(cgp) ||
+	if (!CG_CHKMAGIC(cgp, need2swap) ||
 	    (cgp->cg_cs.cs_nbfree == 0 && size == fs->fs_bsize))
 		goto fail;
 	bp->b_xflags |= BX_BKGRDWRITE;
-	cgp->cg_old_time = cgp->cg_time = time_second;
+	cgp->cg_old_time = UFS_RW32(time_second, need2swap);
+	cgp->cg_time = UFS_RW64(time_second, need2swap);
 	if (size == fs->fs_bsize) {
 		UFS_LOCK(ump);
 		blkno = ffs_alloccgblk(ip, bp, bpref, rsize);
@@ -1642,7 +1656,7 @@ ffs_alloccg(ip, cg, bpref, size, rsize)
 	 * allocsiz is the size which will be allocated, hacking
 	 * it down to a smaller size if necessary
 	 */
-	blksfree = cg_blksfree(cgp);
+	blksfree = CG_BLKSFREE(cgp, need2swap);
 	frags = numfrags(fs, size);
 	for (allocsiz = frags; allocsiz < fs->fs_frag; allocsiz++)
 		if (cgp->cg_frsum[allocsiz] != 0)
@@ -1668,10 +1682,13 @@ ffs_alloccg(ip, cg, bpref, size, rsize)
 		goto fail;
 	for (i = 0; i < frags; i++)
 		clrbit(blksfree, bno + i);
-	cgp->cg_cs.cs_nffree -= frags;
-	cgp->cg_frsum[allocsiz]--;
+	/* cgp->cg_cs.cs_nffree -= frags; */
+	UFS_ADD32(cgp->cg_cs.cs_nffree, -frags, need2swap);
+	/* cgp->cg_frsum[allocsiz]--; */
+	UFS_ADD32(cgp->cg_frsum[allocsiz], -1, need2swap);
 	if (frags != allocsiz)
-		cgp->cg_frsum[allocsiz - frags]++;
+		/* cgp->cg_frsum[allocsiz - frags]++; */
+		UFS_ADD32(cgp->cg_frsum[allocsiz - frags], 1, need2swap);
 	UFS_LOCK(ump);
 	fs->fs_cstotal.cs_nffree -= frags;
 	fs->fs_cs(fs, cg).cs_nffree -= frags;
@@ -1715,20 +1732,26 @@ ffs_alloccgblk(ip, bp, bpref, size)
 	ufs2_daddr_t blkno;
 	u_int8_t *blksfree;
 	int i, cgbpref;
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	fs = ip->i_fs;
 	ump = ip->i_ump;
 	mtx_assert(UFS_MTX(ump), MA_OWNED);
 	cgp = (struct cg *)bp->b_data;
-	blksfree = cg_blksfree(cgp);
+	blksfree = CG_BLKSFREE(cgp, need2swap);
 	if (bpref == 0) {
-		bpref = cgbase(fs, cgp->cg_cgx) + cgp->cg_rotor + fs->fs_frag;
-	} else if ((cgbpref = dtog(fs, bpref)) != cgp->cg_cgx) {
+			bpref = cgbase(fs, UFS_RW32(cgp->cg_cgx, need2swap)) +
+					UFS_RW32(cgp->cg_rotor, need2swap) + fs->fs_frag;
+	} else if ((cgbpref = dtog(fs, bpref)) !=
+		UFS_RW32(cgp->cg_cgx, need2swap)) {
 		/* map bpref to correct zone in this cg */
 		if (bpref < cgdata(fs, cgbpref))
-			bpref = cgmeta(fs, cgp->cg_cgx);
+			bpref = cgmeta(fs, UFS_RW32(cgp->cg_cgx, need2swap));
 		else
-			bpref = cgdata(fs, cgp->cg_cgx);
+			bpref = cgdata(fs, UFS_RW32(cgp->cg_cgx, need2swap));
 	}
 	/*
 	 * if the requested block is available, use it
@@ -1743,17 +1766,20 @@ ffs_alloccgblk(ip, bp, bpref, size)
 	if (bno < 0)
 		return (0);
 	/* Update cg_rotor only if allocated from the data zone */
-	if (bno >= dtogd(fs, cgdata(fs, cgp->cg_cgx)))
-		cgp->cg_rotor = bno;
+	if (bno >= dtogd(fs, cgdata(fs, UFS_RW32(cgp->cg_cgx, need2swap))))
+		cgp->cg_rotor = UFS_RW32(bno, need2swap);
 gotit:
 	blkno = fragstoblks(fs, bno);
 	ffs_clrblock(fs, blksfree, (long)blkno);
 	ffs_clusteracct(fs, cgp, blkno, -1);
-	cgp->cg_cs.cs_nbfree--;
+	/* cgp->cg_cs.cs_nbfree--; */
+	UFS_ADD32(cgp->cg_cs.cs_nbfree, -1, need2swap);
 	fs->fs_cstotal.cs_nbfree--;
-	fs->fs_cs(fs, cgp->cg_cgx).cs_nbfree--;
+	/* fs->fs_cs(fs, cgp->cg_cgx).cs_nbfree--; */
+	fs->fs_cs(fs, UFS_RW32(cgp->cg_cgx, need2swap)).cs_nbfree--;
 	fs->fs_fmod = 1;
-	blkno = cgbase(fs, cgp->cg_cgx) + bno;
+	/* blkno = cgbase(fs, cgp->cg_cgx) + bno; */
+	blkno = cgbase(fs, UFS_RW32(cgp->cg_cgx, need2swap)) + bno;
 	/*
 	 * If the caller didn't want the whole block free the frags here.
 	 */
@@ -1763,11 +1789,13 @@ gotit:
 		for (i = size; i < fs->fs_frag; i++)
 			setbit(blksfree, bno + i);
 		i = fs->fs_frag - size;
-		cgp->cg_cs.cs_nffree += i;
+		/* cgp->cg_cs.cs_nffree += i; */
+		UFS_ADD32(cgp->cg_cs.cs_nffree, i, need2swap);
 		fs->fs_cstotal.cs_nffree += i;
-		fs->fs_cs(fs, cgp->cg_cgx).cs_nffree += i;
+		fs->fs_cs(fs, UFS_RW32(cgp->cg_cgx, need2swap)).cs_nffree += i;
 		fs->fs_fmod = 1;
-		cgp->cg_frsum[i]++;
+		/* cgp->cg_frsum[i]++; */
+		UFS_ADD32(cgp->cg_frsum[i], 1, need2swap);
 	}
 	/* XXX Fixme. */
 	UFS_UNLOCK(ump);
@@ -1802,6 +1830,11 @@ ffs_clusteralloc(ip, cg, bpref, len, unused)
 	u_char *mapp;
 	int32_t *lp;
 	u_int8_t *blksfree;
+	u_int32_t nclusterblks;
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(ip->i_fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	fs = ip->i_fs;
 	ump = ip->i_ump;
@@ -1812,14 +1845,14 @@ ffs_clusteralloc(ip, cg, bpref, len, unused)
 	    NOCRED, &bp))
 		goto fail_lock;
 	cgp = (struct cg *)bp->b_data;
-	if (!cg_chkmagic(cgp))
+	if (!CG_CHKMAGIC(cgp, need2swap))
 		goto fail_lock;
 	bp->b_xflags |= BX_BKGRDWRITE;
 	/*
 	 * Check to see if a cluster of the needed size (or bigger) is
 	 * available in this cylinder group.
 	 */
-	lp = &cg_clustersum(cgp)[len];
+	lp = &CG_CLUSTERSUM(cgp, need2swap)[len];
 	for (i = len; i <= fs->fs_contigsumsize; i++)
 		if (*lp++ > 0)
 			break;
@@ -1831,7 +1864,7 @@ ffs_clusteralloc(ip, cg, bpref, len, unused)
 		 * future cluster allocation requests can avoid reading
 		 * the cylinder group map only to find no clusters.
 		 */
-		lp = &cg_clustersum(cgp)[len - 1];
+		lp = &CG_CLUSTERSUM(cgp, need2swap)[len - 1];
 		for (i = len - 1; i > 0; i--)
 			if (*lp-- > 0)
 				break;
@@ -1855,10 +1888,11 @@ ffs_clusteralloc(ip, cg, bpref, len, unused)
 	else
 		bpref = blknum(fs, bpref);
 	bpref = fragstoblks(fs, dtogd(fs, bpref));
-	mapp = &cg_clustersfree(cgp)[bpref / NBBY];
+	mapp = &CG_CLUSTERSFREE(cgp, need2swap)[bpref / NBBY];
 	map = *mapp++;
 	bit = 1 << (bpref % NBBY);
-	for (run = 0, got = bpref; got < cgp->cg_nclusterblks; got++) {
+	nclusterblks = UFS_RW32(cgp->cg_nclusterblks, need2swap);
+	for (run = 0, got = bpref; got < nclusterblks; got++) {
 		if ((map & bit) == 0) {
 			run = 0;
 		} else {
@@ -1873,12 +1907,12 @@ ffs_clusteralloc(ip, cg, bpref, len, unused)
 			bit = 1;
 		}
 	}
-	if (got >= cgp->cg_nclusterblks)
+	if (got >= nclusterblks)
 		goto fail_lock;
 	/*
 	 * Allocate the cluster that we have found.
 	 */
-	blksfree = cg_blksfree(cgp);
+	blksfree = CG_BLKSFREE(cgp, need2swap);
 	for (i = 1; i <= len; i++)
 		if (!ffs_isblock(fs, blksfree, got - run + i))
 			panic("ffs_clusteralloc: map mismatch");
@@ -1937,7 +1971,11 @@ ffs_nodealloccg(ip, cg, ipref, mode, unused)
 	u_int8_t *inosused, *loc;
 	struct ufs2_dinode *dp2;
 	int error, start, len, i;
-	u_int32_t old_initediblk;
+	u_int32_t initediblk, old_initediblk;
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(ip->i_fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	fs = ip->i_fs;
 	ump = ip->i_ump;
@@ -1954,20 +1992,22 @@ check_nifree:
 	}
 	cgp = (struct cg *)bp->b_data;
 restart:
-	if (!cg_chkmagic(cgp) || cgp->cg_cs.cs_nifree == 0) {
+	if (!CG_CHKMAGIC(cgp, need2swap) || cgp->cg_cs.cs_nifree == 0) {
 		brelse(bp);
 		UFS_LOCK(ump);
 		return (0);
 	}
 	bp->b_xflags |= BX_BKGRDWRITE;
-	inosused = cg_inosused(cgp);
+	inosused = CG_INOSUSED(cgp, need2swap);
 	if (ipref) {
 		ipref %= fs->fs_ipg;
 		if (isclr(inosused, ipref))
 			goto gotit;
 	}
-	start = cgp->cg_irotor / NBBY;
-	len = howmany(fs->fs_ipg - cgp->cg_irotor, NBBY);
+	/* start = cgp->cg_irotor / NBBY; */
+	start = UFS_RW32(cgp->cg_irotor, need2swap) / NBBY;
+	/* len = howmany(fs->fs_ipg - cgp->cg_irotor, NBBY); */
+	len = howmany(fs->fs_ipg - UFS_RW32(cgp->cg_irotor, need2swap), NBBY);
 	loc = memcchr(&inosused[start], 0xff, len);
 	if (loc == NULL) {
 		len = start + 1;
@@ -1975,7 +2015,7 @@ restart:
 		loc = memcchr(&inosused[start], 0xff, len);
 		if (loc == NULL) {
 			printf("cg = %d, irotor = %ld, fs = %s\n",
-			    cg, (long)cgp->cg_irotor, fs->fs_fsmnt);
+			    cg, (long)UFS_RW32(cgp->cg_irotor, need2swap), fs->fs_fsmnt);
 			panic("ffs_nodealloccg: map corrupted");
 			/* NOTREACHED */
 		}
@@ -1985,10 +2025,11 @@ gotit:
 	/*
 	 * Check to see if we need to initialize more inodes.
 	 */
+    initediblk = UFS_RW32(cgp->cg_initediblk, need2swap);
 	if (fs->fs_magic == FS_UFS2_MAGIC &&
-	    ipref + INOPB(fs) > cgp->cg_initediblk &&
-	    cgp->cg_initediblk < cgp->cg_niblk) {
-		old_initediblk = cgp->cg_initediblk;
+	    ipref + INOPB(fs) > initediblk &&
+	    initediblk < UFS_RW32(cgp->cg_niblk, need2swap)) {
+		old_initediblk = initediblk;
 
 		/*
 		 * Free the cylinder group lock before writing the
@@ -2053,20 +2094,26 @@ gotit:
 		}
 		cgp = (struct cg *)bp->b_data;
 		if (cgp->cg_initediblk == old_initediblk)
-			cgp->cg_initediblk += INOPB(fs);
+			/* cgp->cg_initediblk += INOPB(fs); */
+		UFS_ADD32(cgp->cg_initediblk, INOPB(fs), need2swap);
 		goto restart;
 	}
-	cgp->cg_old_time = cgp->cg_time = time_second;
-	cgp->cg_irotor = ipref;
+	/* cgp->cg_old_time = cgp->cg_time = time_second; */
+	cgp->cg_old_time =  UFS_RW32(time_second, need2swap);
+	cgp->cg_time =  UFS_RW64(time_second, need2swap);
+	/* cgp->cg_irotor = ipref; */
+	cgp->cg_irotor = UFS_RW32(ipref, need2swap);
 	UFS_LOCK(ump);
 	ACTIVECLEAR(fs, cg);
 	setbit(inosused, ipref);
-	cgp->cg_cs.cs_nifree--;
+	/* cgp->cg_cs.cs_nifree--; */
+	UFS_ADD32(cgp->cg_cs.cs_nifree, -1, need2swap);
 	fs->fs_cstotal.cs_nifree--;
 	fs->fs_cs(fs, cg).cs_nifree--;
 	fs->fs_fmod = 1;
 	if ((mode & IFMT) == IFDIR) {
-		cgp->cg_cs.cs_ndir++;
+		/* cgp->cg_cs.cs_ndir++; */
+		UFS_ADD32(cgp->cg_cs.cs_ndir, 1, need2swap);
 		fs->fs_cstotal.cs_ndir++;
 		fs->fs_cs(fs, cg).cs_ndir++;
 	}
@@ -2103,6 +2150,10 @@ ffs_blkfree_cg(ump, fs, devvp, bno, size, inum, dephd)
 	u_int cg;
 	u_int8_t *blksfree;
 	struct cdev *dev;
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	cg = dtog(fs, bno);
 	if (devvp->v_type == VREG) {
@@ -2135,14 +2186,16 @@ ffs_blkfree_cg(ump, fs, devvp, bno, size, inum, dephd)
 		return;
 	}
 	cgp = (struct cg *)bp->b_data;
-	if (!cg_chkmagic(cgp)) {
+	if (!CG_CHKMAGIC(cgp, need2swap)) {
 		brelse(bp);
 		return;
 	}
 	bp->b_xflags |= BX_BKGRDWRITE;
-	cgp->cg_old_time = cgp->cg_time = time_second;
+	/* cgp->cg_old_time = cgp->cg_time = time_second; */
+	cgp->cg_old_time = UFS_RW32(time_second, need2swap);
+	cgp->cg_time = UFS_RW64(time_second, need2swap);
 	cgbno = dtogd(fs, bno);
-	blksfree = cg_blksfree(cgp);
+	blksfree = CG_BLKSFREE(cgp, need2swap);
 	UFS_LOCK(ump);
 	if (size == fs->fs_bsize) {
 		fragno = fragstoblks(fs, cgbno);
@@ -2159,7 +2212,8 @@ ffs_blkfree_cg(ump, fs, devvp, bno, size, inum, dephd)
 		}
 		ffs_setblock(fs, blksfree, fragno);
 		ffs_clusteracct(fs, cgp, fragno, 1);
-		cgp->cg_cs.cs_nbfree++;
+		/* cgp->cg_cs.cs_nbfree++; */
+		UFS_ADD32(cgp->cg_cs.cs_nbfree, 1, need2swap);
 		fs->fs_cstotal.cs_nbfree++;
 		fs->fs_cs(fs, cg).cs_nbfree++;
 	} else {
@@ -2182,7 +2236,8 @@ ffs_blkfree_cg(ump, fs, devvp, bno, size, inum, dephd)
 			}
 			setbit(blksfree, cgbno + i);
 		}
-		cgp->cg_cs.cs_nffree += i;
+		/* cgp->cg_cs.cs_nffree += i; */
+		UFS_ADD32(cgp->cg_cs.cs_nffree, i, need2swap);
 		fs->fs_cstotal.cs_nffree += i;
 		fs->fs_cs(fs, cg).cs_nffree += i;
 		/*
@@ -2195,11 +2250,13 @@ ffs_blkfree_cg(ump, fs, devvp, bno, size, inum, dephd)
 		 */
 		fragno = fragstoblks(fs, bbase);
 		if (ffs_isblock(fs, blksfree, fragno)) {
-			cgp->cg_cs.cs_nffree -= fs->fs_frag;
+			/* cgp->cg_cs.cs_nffree -= fs->fs_frag; */
+			UFS_ADD32(cgp->cg_cs.cs_nffree, -fs->fs_frag, need2swap);
 			fs->fs_cstotal.cs_nffree -= fs->fs_frag;
 			fs->fs_cs(fs, cg).cs_nffree -= fs->fs_frag;
 			ffs_clusteracct(fs, cgp, fragno, 1);
-			cgp->cg_cs.cs_nbfree++;
+			/* cgp->cg_cs.cs_nbfree++; */
+			UFS_ADD32(cgp->cg_cs.cs_nbfree, 1, need2swap);
 			fs->fs_cstotal.cs_nbfree++;
 			fs->fs_cs(fs, cg).cs_nbfree++;
 		}
@@ -2336,6 +2393,10 @@ ffs_checkblk(ip, bno, size)
 	ufs1_daddr_t cgbno;
 	int i, error, frags, free;
 	u_int8_t *blksfree;
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(ip->i_fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	fs = ip->i_fs;
 	if ((u_int)size > fs->fs_bsize || fragoff(fs, size) != 0) {
@@ -2350,10 +2411,10 @@ ffs_checkblk(ip, bno, size)
 	if (error)
 		panic("ffs_checkblk: cg bread failed");
 	cgp = (struct cg *)bp->b_data;
-	if (!cg_chkmagic(cgp))
+	if (!CG_CHKMAGIC(cgp, need2swap))
 		panic("ffs_checkblk: cg magic mismatch");
 	bp->b_xflags |= BX_BKGRDWRITE;
-	blksfree = cg_blksfree(cgp);
+	blksfree = CG_BLKSFREE(cgp, need2swap);
 	cgbno = dtogd(fs, bno);
 	if (size == fs->fs_bsize) {
 		free = ffs_isblock(fs, blksfree, fragstoblks(fs, cgbno));
@@ -2410,6 +2471,10 @@ ffs_freefile(ump, fs, devvp, ino, mode, wkhd)
 	u_int cg;
 	u_int8_t *inosused;
 	struct cdev *dev;
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(ip->i_fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	cg = ino_to_cg(fs, ino);
 	if (devvp->v_type == VREG) {
@@ -2429,13 +2494,15 @@ ffs_freefile(ump, fs, devvp, ino, mode, wkhd)
 		return (error);
 	}
 	cgp = (struct cg *)bp->b_data;
-	if (!cg_chkmagic(cgp)) {
+	if (!CG_CHKMAGIC(cgp, need2swap)) {
 		brelse(bp);
 		return (0);
 	}
 	bp->b_xflags |= BX_BKGRDWRITE;
-	cgp->cg_old_time = cgp->cg_time = time_second;
-	inosused = cg_inosused(cgp);
+	/* cgp->cg_old_time = cgp->cg_time = time_second; */
+	cgp->cg_old_time = UFS_RW32(time_second, need2swap);
+	cgp->cg_time = UFS_RW64(time_second, need2swap);
+	inosused = CG_INOSUSED(cgp, need2swap);
 	ino %= fs->fs_ipg;
 	if (isclr(inosused, ino)) {
 		printf("dev = %s, ino = %ju, fs = %s\n", devtoname(dev),
@@ -2444,14 +2511,16 @@ ffs_freefile(ump, fs, devvp, ino, mode, wkhd)
 			panic("ffs_freefile: freeing free inode");
 	}
 	clrbit(inosused, ino);
-	if (ino < cgp->cg_irotor)
-		cgp->cg_irotor = ino;
-	cgp->cg_cs.cs_nifree++;
+	if (ino < UFS_RW32(cgp->cg_irotor, need2swap))
+		cgp->cg_irotor = UFS_RW32(ino, need2swap);
+	/* cgp->cg_cs.cs_nifree++; */
+	UFS_ADD32(cgp->cg_cs.cs_nifree, 1, need2swap);
 	UFS_LOCK(ump);
 	fs->fs_cstotal.cs_nifree++;
 	fs->fs_cs(fs, cg).cs_nifree++;
 	if ((mode & IFMT) == IFDIR) {
-		cgp->cg_cs.cs_ndir--;
+		/* cgp->cg_cs.cs_ndir--; */
+		UFS_ADD32(cgp->cg_cs.cs_ndir, -1, need2swap);
 		fs->fs_cstotal.cs_ndir--;
 		fs->fs_cs(fs, cg).cs_ndir--;
 	}
@@ -2480,6 +2549,10 @@ ffs_checkfreefile(fs, devvp, ino)
 	int ret;
 	u_int cg;
 	u_int8_t *inosused;
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	cg = ino_to_cg(fs, ino);
 	if (devvp->v_type == VREG) {
@@ -2496,11 +2569,11 @@ ffs_checkfreefile(fs, devvp, ino)
 		return (1);
 	}
 	cgp = (struct cg *)bp->b_data;
-	if (!cg_chkmagic(cgp)) {
+	if (!CG_CHKMAGIC(cgp, need2swap)) {
 		brelse(bp);
 		return (1);
 	}
-	inosused = cg_inosused(cgp);
+	inosused = CG_INOSUSED(cgp, need2swap);
 	ino %= fs->fs_ipg;
 	ret = isclr(inosused, ino);
 	brelse(bp);
@@ -2524,6 +2597,10 @@ ffs_mapsearch(fs, cgp, bpref, allocsiz)
 	int start, len, loc, i;
 	int blk, field, subfield, pos;
 	u_int8_t *blksfree;
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	/*
 	 * find the fragment by searching through the free block
@@ -2532,8 +2609,8 @@ ffs_mapsearch(fs, cgp, bpref, allocsiz)
 	if (bpref)
 		start = dtogd(fs, bpref) / NBBY;
 	else
-		start = cgp->cg_frotor / NBBY;
-	blksfree = cg_blksfree(cgp);
+		start = UFS_RW32(cgp->cg_frotor, need2swap) / NBBY;
+	blksfree = CG_BLKSFREE(cgp, need2swap);
 	len = howmany(fs->fs_fpg, NBBY) - start;
 	loc = scanc((u_int)len, (u_char *)&blksfree[start],
 		fragtbl[fs->fs_frag],
@@ -2552,7 +2629,7 @@ ffs_mapsearch(fs, cgp, bpref, allocsiz)
 		}
 	}
 	bno = (start + len - loc) * NBBY;
-	cgp->cg_frotor = bno;
+	cgp->cg_frotor = UFS_RW32(bno, need2swap);
 	/*
 	 * found the byte in the map
 	 * sift through the bits to find the selected frag

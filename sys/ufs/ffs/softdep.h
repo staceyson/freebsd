@@ -285,6 +285,9 @@ struct pagedep {
 	struct	diraddhd pd_diraddhd[DAHASHSZ]; /* diradd dir entry updates */
 	struct	diraddhd pd_pendinghd;	/* directory entries awaiting write */
 	struct	jmvrefhd pd_jmvrefhd;	/* Dependent journal writes. */
+#ifdef UFS_EI
+	int     pd_need2swap;       /* Non-zero if endian byteswap is needed. */
+#endif
 };
 
 /*

@@ -48,6 +48,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/bio.h>
 #include <sys/buf.h>
 #include <sys/conf.h>
+#include <sys/endian.h>
 #include <sys/fcntl.h>
 #include <sys/ioccom.h>
 #include <sys/malloc.h>
@@ -623,7 +624,16 @@ ffs_reload(struct mount *mp, struct thread *td, int force)
 	if ((error = bread(devvp, btodb(fs->fs_sblockloc), fs->fs_sbsize,
 	    NOCRED, &bp)) != 0)
 		return (error);
-	newfs = (struct fs *)bp->b_data;
+	/* newfs = (struct fs *)bp->b_data; */
+	newfs = malloc(fs->fs_sbsize, M_UFSMNT, M_WAITOK);
+	memcpy(newfs, bp->b_data, fs->fs_sbsize);
+#ifdef UFS_EI
+	if (ump->um_flags & UFS_NEEDSWAP) {
+		ffs_sb_swap((struct fs*)bp->b_data, newfs);
+		fs->fs_flags |= FS_SWAPPED;
+	} else
+#endif
+		fs->fs_flags &= ~FS_SWAPPED;
 	if ((newfs->fs_magic != FS_UFS1_MAGIC &&
 	     newfs->fs_magic != FS_UFS2_MAGIC) ||
 	    newfs->fs_bsize > MAXBSIZE ||
@@ -644,6 +654,7 @@ ffs_reload(struct mount *mp, struct thread *td, int force)
 	sblockloc = fs->fs_sblockloc;
 	bcopy(newfs, fs, (u_int)fs->fs_sbsize);
 	brelse(bp);
+	free(newfs, M_UFSMNT);
 	mp->mnt_maxsymlinklen = fs->fs_maxsymlinklen;
 	ffs_oldfscompat_read(fs, VFSTOUFS(mp), sblockloc);
 	UFS_LOCK(ump);
@@ -723,6 +734,7 @@ loop:
 			MNT_VNODE_FOREACH_ALL_ABORT(mp, mvp);
 			return (error);
 		}
+		/* The endian bswap happens in ffs_load_inode(), if needed. */
 		ffs_load_inode(bp, ip, fs, ip->i_number);
 		ip->i_effnlink = ip->i_nlink;
 		brelse(bp);
@@ -751,12 +763,17 @@ ffs_mountfs(devvp, mp, td)
 	struct fs *fs;
 	struct cdev *dev;
 	void *space;
-	ufs2_daddr_t sblockloc;
-	int error, i, blks, size, ronly;
+	ufs2_daddr_t fsblockloc, sblockloc;
+	int error, i, blks, size, ronly, fstype;
+#ifdef UFS_EI
+	int need2swap = 0;
+#endif
 	int32_t *lp;
 	struct ucred *cred;
 	struct g_consumer *cp;
 	struct mount *nmp;
+	u_int32_t sbsize;
+	int32_t fsbsize;
 
 	bp = NULL;
 	ump = NULL;
@@ -782,10 +799,16 @@ ffs_mountfs(devvp, mp, td)
 
 	fs = NULL;
 	sblockloc = 0;
+	fstype = 0;
 	/*
 	 * Try reading the superblock in each of its possible locations.
 	 */
-	for (i = 0; sblock_try[i] != -1; i++) {
+	/* for (i = 0; sblock_try[i] != -1; i++) { */
+	for (i = 0; ; i++) {
+		if (bp != NULL) {
+			brelse(bp);
+			bp = NULL;
+		}
 		if ((SBLOCKSIZE % cp->provider->sectorsize) != 0) {
 			error = EINVAL;
 			vfs_mount_error(mp,
@@ -797,6 +820,7 @@ ffs_mountfs(devvp, mp, td)
 		    cred, &bp)) != 0)
 			goto out;
 		fs = (struct fs *)bp->b_data;
+        /* XXX
 		sblockloc = sblock_try[i];
 		if ((fs->fs_magic == FS_UFS1_MAGIC ||
 		     (fs->fs_magic == FS_UFS2_MAGIC &&
@@ -807,11 +831,88 @@ ffs_mountfs(devvp, mp, td)
 			break;
 		brelse(bp);
 		bp = NULL;
+        */
+        fsblockloc = sblockloc = sblock_try[i];
+        if (fs->fs_magic == FS_UFS1_MAGIC) {
+            sbsize = fs->fs_sbsize;
+            fstype = UFS1;
+            fsbsize = fs->fs_bsize;
+#ifdef UFS_EI
+			need2swap = 0;
+		} else if (fs->fs_magic == bswap32(FS_UFS1_MAGIC)) {
+			sbsize = bswap32(fs->fs_sbsize);
+			fstype = UFS1;
+			fsbsize = bswap32(fs->fs_bsize);
+			need2swap = 1;
+printf("UFS1 BE FS\n");
+#endif
+		} else if (fs->fs_magic == FS_UFS2_MAGIC) {
+			sbsize = fs->fs_sbsize;
+			fstype = UFS2;
+			fsbsize = fs->fs_bsize;
+#ifdef UFS_EI
+			need2swap = 0;
+		} else if (fs->fs_magic == bswap32(FS_UFS2_MAGIC)) {
+			sbsize = bswap32(fs->fs_sbsize);
+			fstype = UFS2;
+			fsbsize = bswap32(fs->fs_bsize);
+			need2swap = 1;
+printf("UFS2 BE FS\n");
+#endif
+        } else
+            continue;
+
+        /* fs->fs_sblockloc isn't defined for old filesystem */
+        if (fstype == UFS1 && !(fs->fs_old_flags & FS_FLAGS_UPDATED)) {
+            if (SBLOCK_UFS2 == sblockloc)
+                /*
+                 * This is likely to be the first alternate
+                 * in a filesystem with 64k blocks.
+                 * Don't use it.
+                 */
+                continue;
+            fsblockloc = sblockloc;
+        } else {
+            fsblockloc = fs->fs_sblockloc;
+#ifdef UFS_EI
+            if (need2swap)
+                fsblockloc = bswap64(fsblockloc);
+#endif
+		}
+		/* Check we haven't found an alternate superblock */
+		if (fsblockloc != sblockloc)
+			continue;
+		/* Validate size of superblock */
+		if (sbsize > MAXBSIZE || sbsize < sizeof(struct fs))
+			continue;
+		/* Check that we can handle the file system blocksize */
+		if (fsbsize > MAXBSIZE) {
+				printf("ffs_mountfs: block size (%d) > MAXBSIZE (%d)\n",
+						fsbsize, MAXBSIZE);
+				continue;
+		}
+		/* OK, seems to be a good superblock. */
+        break;
 	}
+
 	if (sblock_try[i] == -1) {
 		error = EINVAL;		/* XXX needs translation */
 		goto out;
 	}
+
+    fs = malloc((u_long)sbsize, M_UFSMNT, M_WAITOK);
+#ifdef UFS_EI
+	if (need2swap) {
+printf("doing ffs_sb_swap()\n");
+		ffs_sb_swap((struct fs*)bp->b_data, fs);
+		fs->fs_flags |= FS_SWAPPED;
+	} else
+#endif
+	{
+        bcopy(bp->b_data, fs, sbsize);
+        fs->fs_flags &= ~FS_SWAPPED;
+	}
+
 	fs->fs_fmod = 0;
 	fs->fs_flags &= ~FS_INDEXDIRS;	/* no support for directory indicies */
 	fs->fs_flags &= ~FS_UNCLEAN;
@@ -875,14 +976,18 @@ ffs_mountfs(devvp, mp, td)
 		mp->mnt_gjprovider = NULL;
 	}
 	ump = malloc(sizeof *ump, M_UFSMNT, M_WAITOK | M_ZERO);
+#ifdef UFS_EI
+	if (need2swap)
+		ump->um_flags |= UFS_NEEDSWAP;
+#endif
 	ump->um_cp = cp;
 	ump->um_bo = &devvp->v_bufobj;
 	ump->um_fs = malloc((u_long)fs->fs_sbsize, M_UFSMNT, M_WAITOK);
-	if (fs->fs_magic == FS_UFS1_MAGIC) {
-		ump->um_fstype = UFS1;
+	ump->um_fs = fs; /* malloc((u_long)fs->fs_sbsize, M_UFSMNT, M_WAITOK); */
+	ump->um_fstype = fstype;
+	if (fstype == UFS1) {
 		ump->um_balloc = ffs_balloc_ufs1;
 	} else {
-		ump->um_fstype = UFS2;
 		ump->um_balloc = ffs_balloc_ufs2;
 	}
 	ump->um_blkatoff = ffs_blkatoff;
@@ -894,12 +999,12 @@ ffs_mountfs(devvp, mp, td)
 	ump->um_rdonly = ffs_rdonly;
 	ump->um_snapgone = ffs_snapgone;
 	mtx_init(UFS_MTX(ump), "FFS", "FFS Lock", MTX_DEF);
-	bcopy(bp->b_data, ump->um_fs, (u_int)fs->fs_sbsize);
+	/* bcopy(bp->b_data, ump->um_fs, (u_int)fs->fs_sbsize); */
 	if (fs->fs_sbsize < SBLOCKSIZE)
 		bp->b_flags |= B_INVAL | B_NOCACHE;
 	brelse(bp);
 	bp = NULL;
-	fs = ump->um_fs;
+	/* fs = ump->um_fs; */
 	ffs_oldfscompat_read(fs, ump, sblockloc);
 	fs->fs_ronly = ronly;
 	size = fs->fs_cssize;
@@ -918,7 +1023,13 @@ ffs_mountfs(devvp, mp, td)
 			free(fs->fs_csp, M_UFSMNT);
 			goto out;
 		}
-		bcopy(bp->b_data, space, (u_int)size);
+#ifdef UFS_EI
+		if (need2swap)
+			ffs_csum_swap((struct csum *)bp->b_data,
+					(struct csum *)space, size);
+		else
+#endif
+			bcopy(bp->b_data, space, (u_int)size);
 		space = (char *)space + size;
 		brelse(bp);
 		bp = NULL;
@@ -1721,6 +1832,7 @@ ffs_vgetf(mp, ino, flags, vpp, ffs_flags)
 		ip->i_din1 = uma_zalloc(uma_ufs1, M_WAITOK);
 	else
 		ip->i_din2 = uma_zalloc(uma_ufs2, M_WAITOK);
+	/* The endian bswap happens in ffs_load_inode(), if needed. */
 	ffs_load_inode(bp, ip, fs, ino);
 	if (DOINGSOFTDEP(vp))
 		softdep_load_inodeblock(ip);
@@ -1874,7 +1986,13 @@ ffs_sbupdate(ump, waitfor, suspended)
 			size = (blks - i) * fs->fs_fsize;
 		bp = getblk(ump->um_devvp, fsbtodb(fs, fs->fs_csaddr + i),
 		    size, 0, 0, 0);
-		bcopy(space, bp->b_data, (u_int)size);
+#ifdef UFS_EI
+		if (ump->um_flags & UFS_NEEDSWAP)
+			ffs_csum_swap((struct csum *)space,
+					(struct csum *)bp->b_data, size);
+		else
+#endif
+			bcopy(space, bp->b_data, (u_int)size);
 		space = (char *)space + size;
 		if (suspended)
 			bp->b_flags |= B_VALIDSUSPWRT;
@@ -1907,10 +2025,19 @@ ffs_sbupdate(ump, waitfor, suspended)
 	}
 	fs->fs_fmod = 0;
 	fs->fs_time = time_second;
+	ffs_oldfscompat_write(fs, ump);
+#ifdef UFS_EI
+	if (ump->um_flags & UFS_NEEDSWAP)
+			ffs_sb_swap(fs, (struct fs*)bp->b_data);
+	else
+#endif
+		bcopy((caddr_t)fs, bp->b_data, (u_int)fs->fs_sbsize);
 	if (MOUNTEDSOFTDEP(ump->um_mountp))
 		softdep_setup_sbupdate(ump, (struct fs *)bp->b_data, bp);
+/* XXX
 	bcopy((caddr_t)fs, bp->b_data, (u_int)fs->fs_sbsize);
 	ffs_oldfscompat_write((struct fs *)bp->b_data, ump);
+*/
 	if (suspended)
 		bp->b_flags |= B_VALIDSUSPWRT;
 	if (waitfor != MNT_WAIT)

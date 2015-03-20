@@ -105,6 +105,20 @@ int	ffs_vgetf(struct mount *, ino_t, int, struct vnode **, int);
 void	ffs_susp_initialize(void);
 void	ffs_susp_uninitialize(void);
 
+#ifdef UFS_EI
+#include <ufs/ffs/fs.h>
+
+/* Byte swap function prototypes for endian indepedence */
+void ffs_sb_swap(struct fs *o, struct fs *n);
+void ffs_csum_swap(struct csum *o, struct csum *n, int size);
+void ffs_csumtotal_swap(struct csum_total *o, struct csum_total *n);
+void ffs_dinode1_swap(struct ufs1_dinode *o, struct ufs1_dinode *n);
+void ffs_dinode2_swap(struct ufs2_dinode *o, struct ufs2_dinode *n);
+void ffs_cg_swap(struct cg *o, struct cg *n, struct fs *fs);
+void ffs_dirent_swap_out(struct buf *bp);
+void ffs_dirent_swap_in(char *bp, long count);
+#endif
+
 #define	FFSV_FORCEINSMQ	0x0001
 
 extern struct vop_vector ffs_vnodeops1;

@@ -37,6 +37,7 @@
 __FBSDID("$FreeBSD$");
 
 #include "opt_quota.h"
+#include "opt_ufs.h"
 
 #include <sys/param.h>
 #include <sys/kernel.h>
@@ -62,6 +63,7 @@ __FBSDID("$FreeBSD$");
 #include <ufs/ufs/quota.h>
 #include <ufs/ufs/ufsmount.h>
 #include <ufs/ufs/inode.h>
+#include <ufs/ufs/ufs_bswap.h>
 #include <ufs/ufs/ufs_extern.h>
 
 #include <ufs/ffs/fs.h>
@@ -775,6 +777,12 @@ out1:
 	blkno = fragstoblks(fs, fs->fs_csaddr);
 	len = howmany(fs->fs_cssize, fs->fs_bsize);
 	space = copy_fs->fs_csp;
+#ifdef UFS_EI
+	if (UFS_FSNEEDSWAP(fs)) {
+		ffs_sb_swap(copy_fs, copy_fs);
+		ffs_csum_swap(space, space, fs->fs_cssize);
+	}
+#endif
 	for (loc = 0; loc < len; loc++) {
 		error = bread(vp, blkno + loc, fs->fs_bsize, KERNCRED, &nbp);
 		if (error) {
@@ -885,9 +893,16 @@ cgaccount(cg, vp, nbp, passno)
 	struct fs *fs;
 	ufs2_daddr_t base, numblks;
 	int error, len, loc, indiroff;
+#ifdef UFS_EI
+	int need2swap;
+#endif
 
 	ip = VTOI(vp);
 	fs = ip->i_fs;
+#ifdef UFS_EI
+	need2swap = UFS_FSNEEDSWAP(fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 	error = bread(ip->i_devvp, fsbtodb(fs, cgtod(fs, cg)),
 		(int)fs->fs_cgsize, KERNCRED, &bp);
 	if (error) {
@@ -895,7 +910,7 @@ cgaccount(cg, vp, nbp, passno)
 		return (error);
 	}
 	cgp = (struct cg *)bp->b_data;
-	if (!cg_chkmagic(cgp)) {
+	if (!CG_CHKMAGIC(cgp, need2swap)) {
 		brelse(bp);
 		return (EIO);
 	}
@@ -925,7 +940,7 @@ cgaccount(cg, vp, nbp, passno)
 	loc = 0;
 	if (base < NDADDR) {
 		for ( ; loc < NDADDR; loc++) {
-			if (ffs_isblock(fs, cg_blksfree(cgp), loc))
+			if (ffs_isblock(fs, CG_BLKSFREE(cgp, need2swap), loc))
 				DIP_SET(ip, i_db[loc], BLK_NOCOPY);
 			else if (passno == 2 && DIP(ip, i_db[loc])== BLK_NOCOPY)
 				DIP_SET(ip, i_db[loc], 0);
@@ -953,7 +968,7 @@ cgaccount(cg, vp, nbp, passno)
 			indiroff = 0;
 		}
 		if (ip->i_ump->um_fstype == UFS1) {
-			if (ffs_isblock(fs, cg_blksfree(cgp), loc))
+			if (ffs_isblock(fs, CG_BLKSFREE(cgp, need2swap), loc))
 				((ufs1_daddr_t *)(ibp->b_data))[indiroff] =
 				    BLK_NOCOPY;
 			else if (passno == 2 && ((ufs1_daddr_t *)(ibp->b_data))
@@ -964,7 +979,7 @@ cgaccount(cg, vp, nbp, passno)
 				panic("ffs_snapshot: lost indirect block");
 			continue;
 		}
-		if (ffs_isblock(fs, cg_blksfree(cgp), loc))
+		if (ffs_isblock(fs, CG_BLKSFREE(cgp, need2swap), loc))
 			((ufs2_daddr_t *)(ibp->b_data))[indiroff] = BLK_NOCOPY;
 		else if (passno == 2 &&
 		    ((ufs2_daddr_t *)(ibp->b_data)) [indiroff] == BLK_NOCOPY)
@@ -1003,6 +1018,10 @@ expunge_ufs1(snapvp, cancelip, fs, acctfunc, expungetype, clearmode)
 	struct ufs1_dinode *dip;
 	struct thread *td = curthread;
 	struct buf *bp;
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	/*
 	 * Prepare to expunge the inode. If its inode block has not
@@ -1046,7 +1065,9 @@ expunge_ufs1(snapvp, cancelip, fs, acctfunc, expungetype, clearmode)
 		dip->di_mode = 0;
 	dip->di_size = 0;
 	dip->di_blocks = 0;
-	dip->di_flags &= ~SF_SNAPSHOT;
+	/* dip->di_flags &= ~SF_SNAPSHOT; */
+	dip->di_flags = UFS_RW32(UFS_RW32(dip->di_flags, need2swap) &
+					~SF_SNAPSHOT, need2swap);
 	bzero(&dip->di_db[0], (NDADDR + NIADDR) * sizeof(ufs1_daddr_t));
 	bdwrite(bp);
 	/*
@@ -1287,6 +1308,10 @@ expunge_ufs2(snapvp, cancelip, fs, acctfunc, expungetype, clearmode)
 	struct ufs2_dinode *dip;
 	struct thread *td = curthread;
 	struct buf *bp;
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(fs);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	/*
 	 * Prepare to expunge the inode. If its inode block has not
@@ -1330,7 +1355,9 @@ expunge_ufs2(snapvp, cancelip, fs, acctfunc, expungetype, clearmode)
 		dip->di_mode = 0;
 	dip->di_size = 0;
 	dip->di_blocks = 0;
-	dip->di_flags &= ~SF_SNAPSHOT;
+	/* dip->di_flags &= ~SF_SNAPSHOT; */
+	dip->di_flags = UFS_RW32(UFS_RW32(dip->di_flags, need2swap) &
+					~SF_SNAPSHOT, need2swap);
 	bzero(&dip->di_db[0], (NDADDR + NIADDR) * sizeof(ufs2_daddr_t));
 	bdwrite(bp);
 	/*
@@ -1961,10 +1988,15 @@ ffs_snapshot_mount(mp)
 	struct inode *ip;
 	struct uio auio;
 	struct iovec aiov;
-	void *snapblklist;
+	daddr_t *snapblklist;
 	char *reason;
 	daddr_t snaplistsize;
 	int error, snaploc, loc;
+#ifdef UFS_EI
+	const int need2swap = UFS_FSNEEDSWAP(fs);
+	int64_t i;
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	/*
 	 * XXX The following needs to be set before ffs_truncate or
@@ -2059,10 +2091,13 @@ ffs_snapshot_mount(mp)
 		VOP_UNLOCK(vp, 0);
 		return;
 	}
-	snapblklist = malloc(snaplistsize * sizeof(daddr_t),
+#ifdef UFS_EI
+	snaplistsize = UFS_RW64(snaplistsize, need2swap);
+#endif
+	snapblklist = (daddr_t *)malloc(snaplistsize * sizeof(daddr_t),
 	    M_UFSMNT, M_WAITOK);
 	auio.uio_iovcnt = 1;
-	aiov.iov_base = snapblklist;
+	aiov.iov_base = (void *)snapblklist;
 	aiov.iov_len = snaplistsize * sizeof (daddr_t);
 	auio.uio_resid = aiov.iov_len;
 	auio.uio_offset -= sizeof(snaplistsize);
@@ -2072,11 +2107,15 @@ ffs_snapshot_mount(mp)
 		free(snapblklist, M_UFSMNT);
 		return;
 	}
+#ifdef UFS_EI
+	for (i = 0; i < (int64_t)snaplistsize; i++)
+		snapblklist[i] = UFS_RW64(snapblklist[i], need2swap);
+#endif
 	VOP_UNLOCK(vp, 0);
 	VI_LOCK(devvp);
 	ASSERT_VOP_LOCKED(devvp, "ffs_snapshot_mount");
 	sn->sn_listsize = snaplistsize;
-	sn->sn_blklist = (daddr_t *)snapblklist;
+	sn->sn_blklist = snapblklist;
 	devvp->v_vflag |= VV_COPYONWRITE;
 	VI_UNLOCK(devvp);
 }

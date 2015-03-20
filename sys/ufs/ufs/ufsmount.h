@@ -94,6 +94,7 @@ struct ufsmount {
 	void	(*um_ifree)(struct ufsmount *, struct inode *);
 	int	(*um_rdonly)(struct inode *);
 	void	(*um_snapgone)(struct inode *);
+	int	um_flags;			/* UFS flags (see below). */
 };
 
 #define	UFS_BALLOC(aa, bb, cc, dd, ee, ff) VFSTOUFS((aa)->v_mount)->um_balloc(aa, bb, cc, dd, ee, ff)
@@ -109,6 +110,11 @@ struct ufsmount {
 #define	UFS_LOCK(aa)	mtx_lock(&(aa)->um_lock)
 #define	UFS_UNLOCK(aa)	mtx_unlock(&(aa)->um_lock)
 #define	UFS_MTX(aa)	(&(aa)->um_lock)
+
+/*
+ * UFS-specific flags
+ */
+#define UFS_NEEDSWAP    0x01    /* Filesystem metadata needs byteswapping. */
 
 /*
  * Filesystem types

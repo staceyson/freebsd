@@ -59,6 +59,7 @@ __FBSDID("$FreeBSD$");
 #include <ufs/ufs/dirhash.h>
 #include <ufs/ufs/extattr.h>
 #include <ufs/ufs/ufsmount.h>
+#include <ufs/ufs/ufs_bswap.h>
 #include <ufs/ufs/ufs_extern.h>
 
 #define WRAPINCR(val, limit)	(((val) + 1 == (limit)) ? 0 : ((val) + 1))
@@ -346,6 +347,10 @@ ufsdirhash_build(struct inode *ip)
 	struct vnode *vp;
 	doff_t bmask, pos;
 	int dirblocks, i, j, memreqd, nblocks, narrays, nslots, slot;
+#ifdef UFS_EI
+	const int need2swap = UFS_IPNEEDSWAP(ip);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	/* Take care of a decreased sysctl value. */
 	while (ufs_dirhashmem > ufs_dirhashmaxmem) {
@@ -453,7 +458,7 @@ ufsdirhash_build(struct inode *ip)
 				slot = WRAPINCR(slot, dh->dh_hlen);
 			dh->dh_hused++;
 			DH_ENTRY(dh, slot) = pos;
-			ufsdirhash_adjfree(dh, pos, -DIRSIZ(0, ep));
+			ufsdirhash_adjfree(dh, pos, -DIRSIZ_EI(0, ep, need2swap));
 		}
 		pos += ep->d_reclen;
 	}
@@ -554,6 +559,10 @@ ufsdirhash_lookup(struct inode *ip, char *name, int namelen, doff_t *offp,
 	doff_t blkoff, bmask, offset, prevoff, seqoff;
 	int i, slot;
 	int error;
+#ifdef UFS_EI
+	const int need2swap = UFS_IPNEEDSWAP(ip);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	dh = ip->i_dirhash;
 	KASSERT(dh != NULL && dh->dh_hash != NULL,
@@ -657,7 +666,7 @@ restart:
 			}
 
 			/* Update offset. */
-			dh->dh_seqoff = offset + DIRSIZ(0, dp);
+			dh->dh_seqoff = offset + DIRSIZ_EI(0, dp, need2swap);
 			*bpp = bp;
 			*offp = offset;
 			ufsdirhash_release(dh);
@@ -705,6 +714,9 @@ ufsdirhash_findfree(struct inode *ip, int slotneeded, int *slotsize)
 	struct buf *bp;
 	doff_t pos, slotstart;
 	int dirblock, error, freebytes, i;
+#ifdef UFS_EI
+	const int need2swap = UFS_IPNEEDSWAP(ip);
+#endif
 
 	dh = ip->i_dirhash;
 	KASSERT(dh != NULL && dh->dh_hash != NULL,
@@ -733,7 +745,7 @@ ufsdirhash_findfree(struct inode *ip, int slotneeded, int *slotsize)
 			brelse(bp);
 			return (-1);
 		}
-		if (dp->d_ino == 0 || dp->d_reclen > DIRSIZ(0, dp))
+		if (dp->d_ino == 0 || dp->d_reclen > DIRSIZ_EI(0, dp, need2swap))
 			break;
 		i += dp->d_reclen;
 		dp = (struct direct *)((char *)dp + dp->d_reclen);
@@ -749,7 +761,7 @@ ufsdirhash_findfree(struct inode *ip, int slotneeded, int *slotsize)
 	while (i < DIRBLKSIZ && freebytes < slotneeded) {
 		freebytes += dp->d_reclen;
 		if (dp->d_ino != 0)
-			freebytes -= DIRSIZ(0, dp);
+			freebytes -= DIRSIZ_EI(0, dp, need2swap);
 		if (dp->d_reclen == 0) {
 			brelse(bp);
 			return (-1);
@@ -807,7 +819,7 @@ ufsdirhash_add(struct inode *ip, struct direct *dirp, doff_t offset)
 
 	if ((dh = ufsdirhash_acquire(ip)) == NULL)
 		return;
-	
+
 	KASSERT(offset < dh->dh_dirblks * DIRBLKSIZ,
 	    ("ufsdirhash_add: bad offset"));
 	/*
@@ -831,7 +843,7 @@ ufsdirhash_add(struct inode *ip, struct direct *dirp, doff_t offset)
 	dh->dh_lastused = time_second;
 
 	/* Update the per-block summary info. */
-	ufsdirhash_adjfree(dh, offset, -DIRSIZ(0, dirp));
+	ufsdirhash_adjfree(dh, offset, -DIRSIZ_EI(0, dirp, UFS_IPNEEDSWAP(ip)));
 	ufsdirhash_release(dh);
 }
 
@@ -858,7 +870,7 @@ ufsdirhash_remove(struct inode *ip, struct direct *dirp, doff_t offset)
 	ufsdirhash_delslot(dh, slot);
 
 	/* Update the per-block summary info. */
-	ufsdirhash_adjfree(dh, offset, DIRSIZ(0, dirp));
+	ufsdirhash_adjfree(dh, offset, DIRSIZ_EI(0, dirp, UFS_IPNEEDSWAP(ip)));
 	ufsdirhash_release(dh);
 }
 
@@ -973,6 +985,10 @@ ufsdirhash_checkblock(struct inode *ip, char *buf, doff_t offset)
 	struct dirhash *dh;
 	struct direct *dp;
 	int block, ffslot, i, nfree;
+#ifdef UFS_EI
+	const int need2swap = UFS_IPNEEDSWAP(ip);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	if (!ufs_dirhashcheck)
 		return;
@@ -1007,7 +1023,7 @@ ufsdirhash_checkblock(struct inode *ip, char *buf, doff_t offset)
 		/* Check that the entry	exists (will panic if it doesn't). */
 		ufsdirhash_findslot(dh, dp->d_name, dp->d_namlen, offset + i);
 
-		nfree += dp->d_reclen - DIRSIZ(0, dp);
+		nfree += dp->d_reclen - DIRSIZ_EI(0, dp, need2swap);
 	}
 	if (i != DIRBLKSIZ)
 		panic("ufsdirhash_checkblock: bad dir end");

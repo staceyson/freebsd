@@ -915,6 +915,12 @@ ufs_remove(ap)
 	struct vnode *dvp = ap->a_dvp;
 	int error;
 	struct thread *td;
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif /* UFS_EI */
+
 
 	td = curthread;
 	ip = VTOI(vp);
@@ -964,6 +970,12 @@ ufs_link(ap)
 	struct inode *ip;
 	struct direct newdir;
 	int error;
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif /* UFS_EI */
+
 
 #ifdef INVARIANTS
 	if ((cnp->cn_flags & HASBUF) == 0)
@@ -2003,6 +2015,12 @@ ufs_rmdir(ap)
 	struct componentname *cnp = ap->a_cnp;
 	struct inode *ip, *dp;
 	int error;
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif /* UFS_EI */
+
 
 	ip = VTOI(vp);
 	dp = VTOI(dvp);
@@ -2105,6 +2123,11 @@ ufs_symlink(ap)
 	if (error)
 		return (error);
 	vp = *vpp;
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif /* UFS_EI */
 	len = strlen(ap->a_target);
 	if (len < vp->v_mount->mnt_maxsymlinklen) {
 		ip = VTOI(vp);
@@ -2148,6 +2171,12 @@ ufs_readdir(ap)
 	ssize_t startresid;
 	int ncookies;
 	int error;
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif /* UFS_EI */
+
 
 	if (uio->uio_offset < 0)
 		return (EINVAL);
@@ -2270,6 +2299,11 @@ ufs_readlink(ap)
 	struct vnode *vp = ap->a_vp;
 	struct inode *ip = VTOI(vp);
 	doff_t isize;
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif /* UFS_EI */
 
 	isize = ip->i_size;
 	if ((isize < vp->v_mount->mnt_maxsymlinklen) ||
@@ -2299,6 +2333,12 @@ ufs_strategy(ap)
 	struct inode *ip;
 	ufs2_daddr_t blkno;
 	int error;
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif /* UFS_EI */
+
 
 	ip = VTOI(vp);
 	if (bp->b_blkno == bp->b_lblkno) {
@@ -2359,6 +2399,12 @@ ufsfifo_close(ap)
 {
 	struct vnode *vp = ap->a_vp;
 	int usecount;
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif /* UFS_EI */
+
 
 	VI_LOCK(vp);
 	usecount = vp->v_usecount;

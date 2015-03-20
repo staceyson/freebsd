@@ -63,6 +63,8 @@ __FBSDID("$FreeBSD$");
 #include <ufs/ufs/dirhash.h>
 #endif
 #include <ufs/ufs/ufsmount.h>
+#include <ufs/ufs/ufs_bswap.h>
+#include <ufs/ffs/ffs_extern.h>
 #include <ufs/ufs/ufs_extern.h>
 
 #ifdef DIAGNOSTIC
@@ -242,6 +244,10 @@ ufs_lookup_ino(struct vnode *vdp, struct vnode **vpp, struct componentname *cnp,
 	int nameiop = cnp->cn_nameiop;
 	ino_t ino, ino1;
 	int ltype;
+#ifdef UFS_EI
+	int need2swap = 0;
+	struct ufsmount *ump;
+#endif
 
 	if (vpp != NULL)
 		*vpp = NULL;
@@ -249,6 +255,11 @@ ufs_lookup_ino(struct vnode *vdp, struct vnode **vpp, struct componentname *cnp,
 	dp = VTOI(vdp);
 	if (dp->i_effnlink == 0)
 		return (ENOENT);
+#ifdef UFS_EI
+	ump = VFSTOUFS(vdp->v_mount);
+	need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif
 
 	/*
 	 * Create a vm object if vmiodirenable is enabled.
@@ -360,8 +371,13 @@ searchloop:
 		 * If necessary, get the next directory block.
 		 */
 		if ((i_offset & bmask) == 0) {
-			if (bp != NULL)
+			if (bp != NULL) {
+#ifdef UFS_EI
+				if (need2swap)
+					ffs_dirent_swap_out(bp);
+#endif /* UFS_EI */
 				brelse(bp);
+			}
 			error =
 			    UFS_BLKATOFF(vdp, (off_t)i_offset, NULL, &bp);
 			if (error)
@@ -481,8 +497,13 @@ notfound:
 		endsearch = i_diroff;
 		goto searchloop;
 	}
-	if (bp != NULL)
+	if (bp != NULL) {
+#ifdef UFS_EI
+		if (need2swap)
+			ffs_dirent_swap_out(bp);
+#endif /* UFS_EI */
 		brelse(bp);
+	}
 	/*
 	 * If creating, and at end of pathname and current
 	 * directory has not been removed, then can consider
@@ -569,6 +590,10 @@ found:
 		DIP_SET(dp, i_size, dp->i_size);
 		dp->i_flag |= IN_CHANGE | IN_UPDATE;
 	}
+#ifdef UFS_EI
+	if (need2swap)
+		ffs_dirent_swap_out(bp);
+#endif /* UFS_EI */
 	brelse(bp);
 
 	/*
@@ -1277,6 +1302,10 @@ ufs_dirrewrite(dp, oip, newinum, newtype, isrmdir)
 	struct direct *ep;
 	struct vnode *vdp = ITOV(dp);
 	int error;
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vdp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+#endif /* UFS_EI */
 
 	/*
 	 * Drop the link before we lock the buf so softdep can block if
@@ -1296,6 +1325,10 @@ ufs_dirrewrite(dp, oip, newinum, newtype, isrmdir)
 		return (error);
 	if (ep->d_namlen == 2 && ep->d_name[1] == '.' && ep->d_name[0] == '.' &&
 	    ep->d_ino != oip->i_number) {
+#ifdef UFS_EI
+		if (need2swap)
+			ffs_dirent_swap_out(bp);
+#endif /* UFS_EI */
 		brelse(bp);
 		return (EIDRM);
 	}
@@ -1304,12 +1337,24 @@ ufs_dirrewrite(dp, oip, newinum, newtype, isrmdir)
 		ep->d_type = newtype;
 	if (DOINGSOFTDEP(vdp)) {
 		softdep_setup_directory_change(bp, dp, oip, newinum, isrmdir);
+#ifdef UFS_EI
+		if (need2swap)
+			ffs_dirent_swap_out(bp);
+#endif /* UFS_EI */
 		bdwrite(bp);
 	} else {
 		if (DOINGASYNC(vdp)) {
+#ifdef UFS_EI
+			if (need2swap)
+				ffs_dirent_swap_out(bp);
+#endif /* UFS_EI */
 			bdwrite(bp);
 			error = 0;
 		} else {
+#ifdef UFS_EI
+			if (need2swap)
+				ffs_dirent_swap_out(bp);
+#endif /* UFS_EI */
 			error = bwrite(bp);
 		}
 	}
@@ -1396,6 +1441,11 @@ ufs_dir_dd_ino(struct vnode *vp, struct ucred *cred, ino_t *dd_ino,
 	struct dirtemplate dirbuf;
 	struct vnode *ddvp;
 	int error, namlen;
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif /* UFS_EI */
 
 	ASSERT_VOP_LOCKED(vp, "ufs_dir_dd_ino");
 	if (vp->v_type != VDIR)
@@ -1446,6 +1496,11 @@ ufs_checkpath(ino_t source_ino, ino_t parent_ino, struct inode *target, struct u
 	ino_t dd_ino;
 
 	vp = tvp = ITOV(target);
+#ifdef UFS_EI
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	int need2swap = UFS_MPNEEDSWAP(ump);
+	if (need2swap) printf("%s:%u: XXX\n", __func__, __LINE__);
+#endif /* UFS_EI */
 	mp = vp->v_mount;
 	*wait_ino = 0;
 	if (target->i_number == source_ino)

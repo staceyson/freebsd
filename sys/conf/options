@@ -294,6 +294,10 @@ UFS_DIRHASH	opt_ufs.h
 # Enable gjournal-based UFS journal.
 UFS_GJOURNAL	opt_ufs.h
 
+# Enable endian independent UFS.  This allows UFS volumes created on big
+# endian systems to be mounted on little endian systems or vice versa.
+UFS_EI		opt_ufs.h
+
 # The below sentence is not in English, and neither is this one.
 # We plan to remove the static dependences above, with a
 # <filesystem>_ROOT option to control if it usable as root.  This list
