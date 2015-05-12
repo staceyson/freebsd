@@ -283,9 +283,9 @@ mips_proc0_init(void)
 #endif
 	proc_linkup0(&proc0, &thread0);
 
-	KASSERT((kstack0 & PAGE_MASK) == 0,
-		("kstack0 is not aligned on a page boundary: 0x%0lx",
-		(long)kstack0));
+	KASSERT((kstack0 & ((KSTACK_PAGE_SIZE * 2) - 1)) == 0,
+		("kstack0 is not aligned on a page (0x%0lx) boundary: 0x%0lx",
+		(long)(KSTACK_PAGE_SIZE * 2), (long)kstack0));
 	thread0.td_kstack = kstack0;
 	thread0.td_kstack_pages = KSTACK_PAGES;
 	/* 
@@ -459,7 +459,7 @@ mips_pcpu_tlb_init(struct pcpu *pcpu)
 	 * We use a wired tlb index to do this one-time mapping.
 	 */
 	pa = vtophys(pcpu);
-	pte = PTE_D | PTE_V | PTE_G | PTE_C_CACHE;
+	pte = PTE_D | PTE_VALID | PTE_REF | PTE_G | PTE_C_CACHE;
 	tlb_insert_wired(PCPU_TLB_ENTRY, (vm_offset_t)pcpup,
 			 TLBLO_PA_TO_PFN(pa) | pte,
 			 TLBLO_PA_TO_PFN(pa + PAGE_SIZE) | pte);

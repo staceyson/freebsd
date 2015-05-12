@@ -161,17 +161,38 @@
 
 #define	MAXDUMPPGS		1		/* xxx: why is this only one? */
 
+#ifdef KSTACK_LARGE_PAGE
+/*
+ * For a large kernel stack page the KSTACK_SIZE needs to be a page size
+ * supported by the hardware (e.g. 16K).
+ */
+#define	KSTACK_SIZE		(1 << 14)	/* Single 16K page */
+#define	KSTACK_PAGE_SIZE	KSTACK_SIZE
+#define	KSTACK_PAGE_MASK	(KSTACK_PAGE_SIZE - 1)
+#define	KSTACK_PAGES		(KSTACK_SIZE / PAGE_SIZE)
+#define	KSTACK_TLBMASK_MASK	((KSTACK_PAGE_MASK >> (TLBMASK_SHIFT - 1)) \
+					<< TLBMASK_SHIFT)
+#define	KSTACK_GUARD_PAGES	((KSTACK_PAGE_SIZE * 2) / PAGE_SIZE)
+
+#else /* ! KSTACK_LARGE_PAGE */
+
 /*
  * The kernel stack needs to be aligned on a (PAGE_SIZE * 2) boundary.
  */
 #define	KSTACK_PAGES		2	/* kernel stack */
+#define	KSTACK_SIZE		(KSTACK_PAGES * PAGE_SIZE)
+#define	KSTACK_PAGE_SIZE	PAGE_SIZE
+#define	KSTACK_PAGE_MASK	(PAGE_SIZE - 1)
 #define	KSTACK_GUARD_PAGES	2	/* pages of kstack guard; 0 disables */
+#endif /* ! KSTACK_LARGE_PAGE */
 
 /*
  * Mach derived conversion macros
  */
 #define	round_page(x)		(((x) + PAGE_MASK) & ~PAGE_MASK)
 #define	trunc_page(x)		((x) & ~PAGE_MASK)
+#define	round_2mpage(x)		(((x) + PDRMASK) & ~PDRMASK)
+#define	trunc_2mpage(x)		((x) & ~PDRMASK)
 
 #define	atop(x)			((x) >> PAGE_SHIFT)
 #define	ptoa(x)			((x) << PAGE_SHIFT)
